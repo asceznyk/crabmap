@@ -6,10 +6,10 @@ use redb::{Database, Error};
 
 mod server;
 use server::{serve};
-mod app;
-use app::{App, ensure_table, put_record, get_record};
 mod core;
-use core::{Record, Deleted, SysError};
+use core::{
+  App, Record, Deleted, SysError
+};
 
 #[derive(Subcommand)]
 enum Command {
@@ -43,7 +43,7 @@ struct Args {
 
 fn test_db_rec(app:&App) -> Result<(),SysError> {
   info!("test_db_rec: called!");
-  ensure_table(app)?;
+  app.ensure_table()?;
   info!("test_db_rec: Database created!");
   let sample_rec = Record {
     replica_volumes: vec!["v1".to_string(), "v2".to_string()],
@@ -51,10 +51,10 @@ fn test_db_rec(app:&App) -> Result<(),SysError> {
     content_hash: "abc123".to_string(),
   };
   let sample_key = String::from("sample_file_key");
-  let fetched_rec = match get_record(app, &sample_key) {
+  let fetched_rec = match app.get_record(&sample_key) {
     Ok(record) => record,
     Err(SysError::RecordNotFound) => {
-      put_record(app, &sample_key, &sample_rec)?;
+      app.put_record(&sample_key, &sample_rec)?;
       info!("test_db_rec: record inserted!");
       sample_rec
     }

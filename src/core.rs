@@ -1,9 +1,21 @@
 use thiserror;
 use serde::{Deserialize, Serialize};
 use tracing::error;
+use redb::{Database, ReadableDatabase, TableDefinition};
+
+const TABLE:TableDefinition<String,String> = TableDefinition::new("path_map");
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Deleted(pub i32);
+
+#[derive(Debug)]
+pub struct App<'a> {
+  pub volumes: Vec<String>,
+  pub nsub: usize,
+  pub nreplicas: usize,
+  pub voltimeout: usize,
+  pub db: &'a Database
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Record {
@@ -48,5 +60,37 @@ pub fn from_record(rec:&Record) -> Result<String,SysError> {
     }
   };
   Ok(json)
+}
+
+impl<'a> App<'a> {
+  pub fn ensure_table(&self) -> Result<&Database,SysError> {
+    let db = self.db;
+    {
+      let write_txn = db.begin_write()?;
+      let table = write_txn.open_table(TABLE)?;
+      drop(table);
+      write_txn.commit()?;
+    }
+    Ok(db)
+  }
+  pub fn get_record(&self, key:&String) -> Result<Record,SysError> {
+    let db = self.db;
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(TABLE)?;
+    let record = table.get(key)?.ok_or(SysError::RecordNotFound)?;
+    let json = record.value().to_string();
+    to_record(&json)
+  }
+  pub fn put_record(&self, key:&String, rec:&Record) -> Result<(),SysError> {
+    let db = self.db;
+    let write_txn = db.begin_write()?;
+    {
+      let mut table = write_txn.open_table(TABLE)?;
+      let json:String = from_record(rec)?;
+      table.insert(key, json)?;
+    }
+    write_txn.commit()?;
+    Ok(())
+  }
 }
 
