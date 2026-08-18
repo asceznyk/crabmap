@@ -9,12 +9,12 @@ const TABLE:TableDefinition<String,String> = TableDefinition::new("path_map");
 pub struct Deleted(pub i32);
 
 #[derive(Debug)]
-pub struct App<'a> {
+pub struct App {
   pub volumes: Vec<String>,
   pub nsub: usize,
   pub nreplicas: usize,
   pub voltimeout: usize,
-  pub db: &'a Database
+  pub db: Database
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,9 +62,9 @@ pub fn from_record(rec:&Record) -> Result<String,SysError> {
   Ok(json)
 }
 
-impl<'a> App<'a> {
+impl App {
   pub fn ensure_table(&self) -> Result<&Database,SysError> {
-    let db = self.db;
+    let db = &self.db;
     {
       let write_txn = db.begin_write()?;
       let table = write_txn.open_table(TABLE)?;
@@ -74,7 +74,7 @@ impl<'a> App<'a> {
     Ok(db)
   }
   pub fn get_record(&self, key:&String) -> Result<Record,SysError> {
-    let db = self.db;
+    let db = &self.db;
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(TABLE)?;
     let record = table.get(key)?.ok_or(SysError::RecordNotFound)?;
@@ -82,7 +82,7 @@ impl<'a> App<'a> {
     to_record(&json)
   }
   pub fn put_record(&self, key:&String, rec:&Record) -> Result<(),SysError> {
-    let db = self.db;
+    let db = &self.db;
     let write_txn = db.begin_write()?;
     {
       let mut table = write_txn.open_table(TABLE)?;

@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tracing::{error,info};
 use clap::{Parser, Subcommand};
-use redb::{Database, Error};
+use redb::{Database};
 
 mod server;
 use server::{serve};
@@ -41,34 +42,6 @@ struct Args {
   command:Option<Command>,
 }
 
-fn test_db_rec(app:&App) -> Result<(),SysError> {
-  info!("test_db_rec: called!");
-  app.ensure_table()?;
-  info!("test_db_rec: Database created!");
-  let sample_rec = Record {
-    replica_volumes: vec!["v1".to_string(), "v2".to_string()],
-    deleted: Deleted(0),
-    content_hash: "abc123".to_string(),
-  };
-  let sample_key = String::from("sample_file_key");
-  let fetched_rec = match app.get_record(&sample_key) {
-    Ok(record) => record,
-    Err(SysError::RecordNotFound) => {
-      app.put_record(&sample_key, &sample_rec)?;
-      info!("test_db_rec: record inserted!");
-      sample_rec
-    }
-    Err(err) => return Err(err),
-  };
-  info!("test_db_rec: {:?}", fetched_rec);
-  Ok(())
-}
-
-fn open_db(dbfile:&PathBuf) -> Result<Database,Error> {
-  let db = Database::create(dbfile)?;
-  Ok(db)
-}
-
 #[tokio::main]
 async fn main() {
   tracing_subscriber::fmt()
@@ -101,18 +74,16 @@ async fn main() {
     error!("main: {} > {}", nreplicas, vlen);
     return;
   }
-  let db = open_db(&dbfile).unwrap();
-  let app = App {
-    volumes: volumes,
-    nreplicas: nreplicas,
-    nsub: nsub,
-    voltimeout: voltimeout,
-    db: &db,
-  };
-  let _ = test_db_rec(&app);
+  let app = Arc::new(App {
+    volumes,
+    nreplicas,
+    nsub,
+    voltimeout,
+    db: Database::create(dbfile).unwrap(),
+  });
   match args.command {
     Some(Command::Run) => {
-      serve(port).await;
+      serve(app, port).await;
     }
     None => {
       error!("main: no command provided! available: `run, rebuild, rebalance`");
