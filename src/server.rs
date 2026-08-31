@@ -63,7 +63,7 @@ async fn handle_put(
 async fn handle_get(
   app:&App,
   key:&str,
-) -> Result<(StatusCode, Json<Value>), SysError> {
+) -> Result<(StatusCode, Json<Value>), SysError> { //TODO: rewrite this!
   let rec = match app.get_record(&key.to_string()) {
     Ok(rec) => rec,
     Err(err) => {

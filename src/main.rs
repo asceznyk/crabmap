@@ -21,7 +21,7 @@ enum Command {
 
 const DEFAULT_PORT:u16 = 4545;
 const DEFAULT_NREPLICAS:usize = 3;
-const DEFAULT_NSUB:usize = 10;
+const DEFAULT_NSUB:usize = 5;
 const DEFAULT_VOLTIMEOUT:usize = 1000;
 
 #[derive(Parser)]

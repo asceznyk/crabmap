@@ -10,6 +10,7 @@ use axum::{
   extract::{Request}
 };
 use md5::{Digest, Md5};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 const TABLE:TableDefinition<String,String> = TableDefinition::new("path_map");
 
@@ -102,33 +103,56 @@ pub fn from_record(rec:&Record) -> Result<String,SysError> {
   Ok(json)
 }
 
-fn hash_key_volume(key:&[u8], volume:&str) -> String {
+fn hash_key_volume(key:&[u8], volume:&str) -> [u8;16] {
   let mut hasher = Md5::new();
   hasher.update(key);
   hasher.update(volume.as_bytes());
-  format!("{:x}", hasher.finalize())
+  hasher.finalize().into()
+}
+
+fn hash_key_into_path(key:&[u8]) -> String {
+  let mut hasher = Md5::new();
+  hasher.update(key);
+  let mkey = hasher.finalize();
+  let b64key = STANDARD.encode(key);
+  format!("{:02X}/{:02X}/{}", mkey[0], mkey[1], b64key)
 }
 
 #[derive(Debug)]
 struct SortVol<'a> {
   volume: &'a str,
-  hash: String,
+  hash: [u8; 16],
 }
 
 pub fn select_volumes_by_key(
-  key:&String,
+  key:&str,
   volumes:&[String],
   nreplicas:usize,
   nsub:usize
 ) -> Vec<String> {
+  assert!(nreplicas <= volumes.len());
+  assert!(nsub > 0);
   let mut sortvols = Vec::<SortVol>::new();
   for volume in volumes {
     let hash = hash_key_volume(key.as_bytes(), volume);
     sortvols.push(SortVol { volume, hash });
   }
   sortvols.sort_by(|a, b| a.hash.cmp(&b.hash));
-  info!("select_volumes_by_key: sortvols = {:?}", sortvols);
-  vec!["dummy".to_string()] //TODO: return the sortvols with nsub hashing
+  let mut kvolumes = Vec::<String>::new();
+  for i in 0..nreplicas {
+    let sv = &sortvols[i];
+    let volname = if nsub == 1 {
+      sv.volume.to_string()
+    } else {
+      let svhash = (sv.hash[12] as u32) << 24
+        | (sv.hash[13] as u32) << 16
+        | (sv.hash[14] as u32) << 8
+        | sv.hash[15] as u32;
+      format!("{}/sv{:02X}", sv.volume, svhash % nsub as u32)
+    };
+    kvolumes.push(volname);
+  }
+  kvolumes
 }
 
 #[derive(Debug)]
@@ -176,7 +200,20 @@ impl App {
     key:&String,
     req:Request
   ) -> Result<(),SysError> {
-    select_volumes_by_key(key, &self.volumes, self.nreplicas, self.nsub);
+    let kvolumes:Vec<String> = select_volumes_by_key(
+      key, &self.volumes, self.nreplicas, self.nsub
+    );
+    self.put_record(
+      &key.to_string(), &Record {
+        replica_volumes: kvolumes,
+        deleted: Deleted::SOFT,
+        content_hash: "".to_string()
+      }
+    )?;
+    let rec = self.get_record(&key.to_string())?;
+    info!("app.write_to_replicas: kvolumes = {:?}", rec);
+    /*for kvolume in kvolumes {
+    }*/
     /*let sample_rec = Record {
       replica_volumes: vec!["v1".to_string(), "v2".to_string()],
       deleted: Deleted::NO,
