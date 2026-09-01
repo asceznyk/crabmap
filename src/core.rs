@@ -9,6 +9,7 @@ use axum::{
   response::{IntoResponse, Response},
   extract::{Request}
 };
+use axum::body::Body;
 use md5::{Digest, Md5};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -155,6 +156,16 @@ pub fn select_volumes_by_key(
   kvolumes
 }
 
+async fn stream_to_replicas(
+  body:Body,
+  remote_paths:Vec<String>
+) -> Result<(),SysError> {
+  info!("stream_to_replicas: body = {:?}", body);
+  info!("stream_to_replicas: remote_paths = {:?}", remote_paths);
+  //TODO: fan-out request body to send to replicas
+  Ok(())
+}
+
 #[derive(Debug)]
 pub struct App {
   pub volumes: Vec<String>,
@@ -195,7 +206,7 @@ impl App {
     write_txn.commit()?;
     Ok(())
   }
-  pub fn write_to_replicas(
+  pub async fn write_to_replicas(
     &self,
     key:&String,
     req:Request
@@ -205,21 +216,28 @@ impl App {
     );
     self.put_record(
       &key.to_string(), &Record {
-        replica_volumes: kvolumes,
+        replica_volumes: kvolumes.clone(),
         deleted: Deleted::SOFT,
         content_hash: "".to_string()
       }
     )?;
-    let rec = self.get_record(&key.to_string())?;
-    info!("app.write_to_replicas: kvolumes = {:?}", rec);
-    /*for kvolume in kvolumes {
-    }*/
-    /*let sample_rec = Record {
-      replica_volumes: vec!["v1".to_string(), "v2".to_string()],
-      deleted: Deleted::NO,
-      content_hash: "abc123".to_string(),
-    };*/
-    //self.put_record(&key.to_string(), &sample_rec)?;
+    let mut remote_paths = Vec::<String>::new();
+    for i in 0..kvolumes.len() {
+      let rpath = format!(
+        "http://{}/{}",
+        kvolumes[i].to_string(),
+        hash_key_into_path(key.as_bytes())
+      );
+      remote_paths.push(rpath);
+    }
+    stream_to_replicas(req.into_body(), remote_paths).await;
+    /*self.put_record(
+      &key.to_string(), &Record {
+        replica_volumes: kvolumes.clone(),
+        deleted: Deleted::NO,
+        content_hash: hash,
+      }
+    )*/
     Ok(())
   }
 }

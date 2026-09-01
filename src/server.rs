@@ -50,7 +50,7 @@ async fn handle_put(
       ));
     }
   }
-  let _ = app.write_to_replicas(&key.to_string(), req);
+  let _ = app.write_to_replicas(&key.to_string(), req).await;
   Ok((
     StatusCode::CREATED,
     Json(json!({
