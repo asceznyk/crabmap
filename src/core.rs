@@ -10,6 +10,11 @@ use axum::{
   extract::{Request}
 };
 use axum::body::Body;
+use reqwest::Client;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use futures::future::try_join_all;
+use futures_util::StreamExt;
 use md5::{Digest, Md5};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -43,6 +48,10 @@ pub enum SysError {
   Commit(#[from] redb::CommitError),
   #[error("JSON error: {0}")]
   Json(#[from] serde_json::Error),
+  #[error("HTTP error: {0}")]
+  Reqwest(#[from] reqwest::Error),
+  #[error("Axum error: {0}")]
+  Axum(#[from] axum::Error),
   #[error("not found")]
   NotFound,
   #[error("record not found")]
@@ -159,10 +168,42 @@ pub fn select_volumes_by_key(
 async fn stream_to_replicas(
   body:Body,
   remote_paths:Vec<String>
-) -> Result<(),SysError> {
-  info!("stream_to_replicas: body = {:?}", body);
+) -> Result<(), SysError> {
   info!("stream_to_replicas: remote_paths = {:?}", remote_paths);
-  //TODO: fan-out request body to send to replicas
+  let client = Client::new();
+  let mut senders = Vec::new();
+  let mut uploads = Vec::new();
+  for rpath in remote_paths {
+    let (tx, rx) = mpsc::channel::<Result<bytes::Bytes,std::io::Error>>(8);
+    senders.push(tx);
+    let req_body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
+    let client = client.clone();
+    let upload = tokio::spawn(async move {
+      let resp = client
+        .put(rpath)
+        .body(req_body)
+        .send()
+        .await?;
+      resp.error_for_status()?;
+      Ok::<(), reqwest::Error>(())
+    });
+    uploads.push(upload);
+  }
+  let mut body_stream = body.into_data_stream();
+  while let Some(chunk) = body_stream.next().await {
+    let chunk = chunk?;
+    for tx in &senders {
+      tx.send(Ok(chunk.clone()))
+        .await
+        .map_err(|_| SysError::Internal)?;
+    }
+  }
+  drop(senders);
+  for upload in uploads {
+    upload.await
+      .map_err(|_| SysError::Internal)??;
+  }
+  info!("stream_to_replicas: completed all writes!");
   Ok(())
 }
 
@@ -231,13 +272,13 @@ impl App {
       remote_paths.push(rpath);
     }
     stream_to_replicas(req.into_body(), remote_paths).await;
-    /*self.put_record(
+    self.put_record(
       &key.to_string(), &Record {
         replica_volumes: kvolumes.clone(),
         deleted: Deleted::NO,
-        content_hash: hash,
+        content_hash: "".to_string(),
       }
-    )*/
+    );
     Ok(())
   }
 }
