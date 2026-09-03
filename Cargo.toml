@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+rand = "0.10"
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1.53", features = ["full"] }
 tokio-stream = "0.1"

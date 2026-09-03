@@ -120,7 +120,7 @@ fn hash_key_volume(key:&[u8], volume:&str) -> [u8;16] {
   hasher.finalize().into()
 }
 
-fn hash_key_into_path(key:&[u8]) -> String {
+pub fn hash_key_into_path(key:&[u8]) -> String {
   let mut hasher = Md5::new();
   hasher.update(key);
   let mkey = hasher.finalize();
@@ -168,7 +168,7 @@ pub fn select_volumes_by_key(
 async fn stream_to_replicas(
   body:Body,
   remote_paths:Vec<String>
-) -> Result<(), SysError> {
+) -> Result<(),SysError> {
   info!("stream_to_replicas: remote_paths = {:?}", remote_paths);
   let client = Client::new();
   let mut senders = Vec::new();
@@ -179,29 +179,40 @@ async fn stream_to_replicas(
     let req_body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
     let client = client.clone();
     let upload = tokio::spawn(async move {
-      let resp = client
-        .put(rpath)
-        .body(req_body)
-        .send()
-        .await?;
-      resp.error_for_status()?;
-      Ok::<(), reqwest::Error>(())
+      info!("starting upload to {}", rpath);
+      let result = async {
+        let resp = client
+          .put(&rpath)
+          .body(req_body)
+          .send()
+          .await?;
+        info!("upload to {} received response: {}", rpath, resp.status());
+        resp.error_for_status()?;
+        Ok::<(), reqwest::Error>(())
+      }.await;
+      if let Err(ref e) = result {
+        error!("upload to {} failed: {}", rpath, e);
+      }
+      result
     });
     uploads.push(upload);
   }
   let mut body_stream = body.into_data_stream();
   while let Some(chunk) = body_stream.next().await {
     let chunk = chunk?;
-    for tx in &senders {
+    for (i, tx) in senders.iter().enumerate() {
+      info!("stream_to_replicas: sending to replica {}", i);
       tx.send(Ok(chunk.clone()))
         .await
         .map_err(|_| SysError::Internal)?;
+      info!("stream_to_replicas: sent to replica {}", i);
     }
   }
   drop(senders);
+  info!("stream_to_replicas: senders dropped!");
   for upload in uploads {
-    upload.await
-      .map_err(|_| SysError::Internal)??;
+    info!("stream_to_replicas: awaiting upload...");
+    upload.await .map_err(|_| SysError::Internal)??;
   }
   info!("stream_to_replicas: completed all writes!");
   Ok(())
@@ -271,14 +282,14 @@ impl App {
       );
       remote_paths.push(rpath);
     }
-    stream_to_replicas(req.into_body(), remote_paths).await;
+    stream_to_replicas(req.into_body(), remote_paths).await?;
     self.put_record(
       &key.to_string(), &Record {
         replica_volumes: kvolumes.clone(),
         deleted: Deleted::NO,
         content_hash: "".to_string(),
       }
-    );
+    )?;
     Ok(())
   }
 }

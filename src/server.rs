@@ -8,17 +8,20 @@ use axum::{
   Router,
   routing::any
 };
+use axum::http::{header, HeaderMap};
 use tracing::{error,info};
 use serde_json::{json, Value};
+use rand::seq::SliceRandom;
+use rand::rng;
 
 use crate::core::{App, Record, Deleted, SysError};
+use crate::core::{hash_key_into_path};
 
 async fn handle_put(
   app:&App,
   key:&str,
   req:Request,
 ) -> Result<(StatusCode, Json<Value>), SysError> {
-  info!("handle_put: called!");
   let content_length = req
     .headers()
     .get(axum::http::header::CONTENT_LENGTH)
@@ -63,22 +66,67 @@ async fn handle_put(
 async fn handle_get(
   app:&App,
   key:&str,
-) -> Result<(StatusCode, Json<Value>), SysError> { //TODO: rewrite this!
+  req:Request
+) -> Result<(StatusCode, HeaderMap, Json<Value>), SysError> {
+  let not_found = || {
+    (
+      StatusCode::NOT_FOUND,
+      HeaderMap::new(),
+      Json(json!({
+        "status": "not found",
+        "value": "No such record in DB"
+      }))
+    )
+  };
   let rec = match app.get_record(&key.to_string()) {
     Ok(rec) => rec,
     Err(err) => {
       return Err(err);
     }
   };
-  Ok((
-    StatusCode::OK,
-    Json(json!({
-      "status": "success",
-      "value": rec
-    })),
-  ))
+  info!("handle_get: rec.deleted = {:?}", rec.deleted);
+  if rec.deleted == Deleted::SOFT || rec.deleted == Deleted::HARD {
+    return Ok(not_found());
+  }
+  let mut rvolumes = rec.replica_volumes.clone();
+  rvolumes.shuffle(&mut rng());
+  let client = reqwest::Client::new();
+  let mut mpath: Option<String> = None;
+  for rvolume in rvolumes {
+    let rpath = format!(
+      "http://{}/{}",
+      rvolume,
+      hash_key_into_path(key.as_bytes())
+    );
+    let response = client
+      .head(&rpath)
+      .send()
+      .await;
+    if let Ok(response) = response {
+      if response.status().is_success() {
+        mpath = Some(rpath);
+        break;
+      }
+    }
+  }
+  match mpath {
+    Some(mpath) => {
+      let mut headers = HeaderMap::new();
+      headers.insert(
+        header::LOCATION,
+        mpath.parse().unwrap()
+      );
+      Ok((
+        StatusCode::FOUND,
+        headers,
+        Json(json!({}))
+      ))
+    }
+    None => {
+      Ok(not_found())
+    }
+  }
 }
-
 /*async fn handle_post(app:&App, key:&str) -> &'static str {
   "POST /: How you doin?"
 }
@@ -100,13 +148,12 @@ async fn dispatch(
   Path(key):Path<String>,
   req:Request,
 ) -> Response {
-  info!("dispatch: request routing...");
   match req.method().as_str() {
     "PUT" => {
       handle_put(&app, &key, req).await.into_response()
     },
     "GET" => {
-      handle_get(&app, &key).await.into_response()
+      handle_get(&app, &key, req).await.into_response()
     },
     _ => {
       (

@@ -333,6 +333,7 @@ dependencies = [
  "futures",
  "futures-util",
  "md-5",
+ "rand",
  "redb",
  "reqwest",
  "serde",
