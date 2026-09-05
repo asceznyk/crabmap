@@ -1,6 +1,6 @@
 use thiserror;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tracing::{error, info};
 use redb::{Database, ReadableDatabase, TableDefinition};
 use axum::{
@@ -179,19 +179,19 @@ async fn stream_to_replicas(
     let req_body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
     let client = client.clone();
     let upload = tokio::spawn(async move {
-      info!("starting upload to {}", rpath);
+      info!("stream_to_replicas: starting upload to {}", rpath);
       let result = async {
         let resp = client
           .put(&rpath)
           .body(req_body)
           .send()
           .await?;
-        info!("upload to {} received response: {}", rpath, resp.status());
+        info!("stream_to_replicas: upload to {} received response: {}", rpath, resp.status());
         resp.error_for_status()?;
-        Ok::<(), reqwest::Error>(())
+        Ok::<(),reqwest::Error>(())
       }.await;
       if let Err(ref e) = result {
-        error!("upload to {} failed: {}", rpath, e);
+        error!("stream_to_replicas: upload to {} failed: {}", rpath, e);
       }
       result
     });
@@ -201,17 +201,13 @@ async fn stream_to_replicas(
   while let Some(chunk) = body_stream.next().await {
     let chunk = chunk?;
     for (i, tx) in senders.iter().enumerate() {
-      info!("stream_to_replicas: sending to replica {}", i);
       tx.send(Ok(chunk.clone()))
         .await
         .map_err(|_| SysError::Internal)?;
-      info!("stream_to_replicas: sent to replica {}", i);
     }
   }
   drop(senders);
-  info!("stream_to_replicas: senders dropped!");
   for upload in uploads {
-    info!("stream_to_replicas: awaiting upload...");
     upload.await .map_err(|_| SysError::Internal)??;
   }
   info!("stream_to_replicas: completed all writes!");
@@ -291,6 +287,16 @@ impl App {
       }
     )?;
     Ok(())
+  }
+  pub async fn query_handler(
+    &self, req:Request
+  ) -> Result<Json<Value>,SysError> {
+    let query = req.uri().query();
+    Ok(
+      Json(json!({
+        "query": query
+      }))
+    )
   }
 }
 

@@ -8,7 +8,7 @@ use axum::{
   Router,
   routing::any
 };
-use axum::http::{header, HeaderMap};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue};
 use tracing::{error,info};
 use serde_json::{json, Value};
 use rand::seq::SliceRandom;
@@ -53,7 +53,7 @@ async fn handle_put(
       ));
     }
   }
-  let _ = app.write_to_replicas(&key.to_string(), req).await;
+  let _ = app.write_to_replicas(&key.to_string(), req).await?;
   Ok((
     StatusCode::CREATED,
     Json(json!({
@@ -68,6 +68,12 @@ async fn handle_get(
   key:&str,
   req:Request
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), SysError> {
+  info!("handle_get: acting..");
+  if req.uri().query().is_some() {
+    info!("handle_get: we have some query!");
+    let body = app.query_handler(req).await?;
+    return Ok((StatusCode::OK, HeaderMap::new(), body));
+  }
   let not_found = || {
     (
       StatusCode::NOT_FOUND,
@@ -84,7 +90,6 @@ async fn handle_get(
       return Err(err);
     }
   };
-  info!("handle_get: rec.deleted = {:?}", rec.deleted);
   if rec.deleted == Deleted::SOFT || rec.deleted == Deleted::HARD {
     return Ok(not_found());
   }
@@ -116,6 +121,14 @@ async fn handle_get(
         header::LOCATION,
         mpath.parse().unwrap()
       );
+      headers.insert(
+        HeaderName::from_static("key-volumes"),
+        HeaderValue::from_str(&rec.replica_volumes.join(",")).unwrap()
+      );
+      headers.insert(
+        HeaderName::from_static("key-balance"),
+        HeaderValue::from_str("balanced").unwrap()
+      );
       Ok((
         StatusCode::FOUND,
         headers,
@@ -127,6 +140,7 @@ async fn handle_get(
     }
   }
 }
+
 /*async fn handle_post(app:&App, key:&str) -> &'static str {
   "POST /: How you doin?"
 }
@@ -148,6 +162,8 @@ async fn dispatch(
   Path(key):Path<String>,
   req:Request,
 ) -> Response {
+  info!("dispatch: routing request..");
+  info!("dispatch: query? = {}", req.uri().query().is_some());
   match req.method().as_str() {
     "PUT" => {
       handle_put(&app, &key, req).await.into_response()
