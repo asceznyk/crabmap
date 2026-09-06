@@ -17,70 +17,18 @@ use rand::rng;
 use crate::core::{App, Record, Deleted, SysError};
 use crate::core::{hash_key_into_path};
 
-async fn handle_put(
-  app:&App,
-  key:&str,
-  req:Request,
-) -> Result<(StatusCode, Json<Value>), SysError> {
-  let content_length = req
-    .headers()
-    .get(axum::http::header::CONTENT_LENGTH)
-    .and_then(|v| v.to_str().ok())
-    .and_then(|v| v.parse::<usize>().ok());
-  if content_length == Some(0) {
-    return Ok((
-      StatusCode::LENGTH_REQUIRED,
-      Json(json!({
-        "error": "Content-Length is required!"
-      })),
-    ));
-  }
-  let rec = match app.get_record(&key.to_string()) {
-    Ok(rec) => Some(rec),
-    Err(SysError::RecordNotFound) => None,
-    Err(err) => {
-      error!("handle_put: Err(err) = {:?}!", err);
-      return Err(err);
-    },
-  };
-  if let Some(rec) = rec {
-    if rec.deleted == Deleted::NO {
-      return Ok((
-        StatusCode::FORBIDDEN,
-        Json(json!({
-          "error": "PUTting into an existing key!"
-        })),
-      ));
-    }
-  }
-  let _ = app.write_to_replicas(&key.to_string(), req).await?;
-  Ok((
-    StatusCode::CREATED,
-    Json(json!({
-      "status": "success",
-      "key": key
-    })),
-  ))
-}
-
 async fn handle_get(
   app:&App,
   key:&str,
   req:Request
 ) -> Result<(StatusCode, HeaderMap, Json<Value>), SysError> {
-  info!("handle_get: acting..");
-  if req.uri().query().is_some() {
-    info!("handle_get: we have some query!");
-    let body = app.query_handler(req).await?;
-    return Ok((StatusCode::OK, HeaderMap::new(), body));
-  }
   let not_found = || {
     (
       StatusCode::NOT_FOUND,
       HeaderMap::new(),
       Json(json!({
-        "status": "not found",
-        "value": "No such record in DB"
+        "status": "Not found",
+        "message": "No such record in DB"
       }))
     )
   };
@@ -141,48 +89,127 @@ async fn handle_get(
   }
 }
 
-/*async fn handle_post(app:&App, key:&str) -> &'static str {
-  "POST /: How you doin?"
+async fn handle_put(
+  app:&App,
+  key:&str,
+  req:Request,
+) -> Result<(StatusCode, Json<Value>), SysError> {
+  let content_length = req
+    .headers()
+    .get(axum::http::header::CONTENT_LENGTH)
+    .and_then(|v| v.to_str().ok())
+    .and_then(|v| v.parse::<usize>().ok());
+  if content_length == Some(0) {
+    return Ok((
+      StatusCode::LENGTH_REQUIRED,
+      Json(json!({
+        "error": "Content-Length is required"
+      })),
+    ));
+  }
+  let rec = match app.get_record(&key.to_string()) {
+    Ok(rec) => Some(rec),
+    Err(SysError::RecordNotFound) => None,
+    Err(err) => {
+      error!("handle_put: Err(err) = {:?}!", err);
+      return Err(err);
+    },
+  };
+  if let Some(rec) = rec {
+    if rec.deleted == Deleted::NO {
+      return Ok((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+          "error": "PUTting into an existing key"
+        })),
+      ));
+    }
+  }
+  let _ = app.write_to_replicas(&key.to_string(), req).await?;
+  Ok((
+    StatusCode::CREATED,
+    Json(json!({"status": "Success"})),
+  ))
 }
 
-async fn handle_delete(app:&App, key:&str) -> &'static str {
-  "DELETE /: I need ya!"
+async fn handle_delete(app:&App, key:&str) -> Result<StatusCode,SysError> {
+  info!("handle_delete: are we here?");
+  let rec = match app.get_record(&key.to_string()) {
+    Ok(rec) => rec,
+    Err(SysError::RecordNotFound) => {
+      error!("handle_delete: record is not found!");
+      return Err(SysError::RecordNotFound);
+    }
+    Err(err) => {
+      error!("handle_delete: internal server error?!");
+      return Err(err);
+    }
+  };
+  if rec.deleted == Deleted::SOFT || rec.deleted == Deleted::HARD {
+    return Ok(StatusCode::NOT_FOUND);
+  }
+  let client = reqwest::Client::new();
+  for rvolume in rec.replica_volumes {
+    let rpath = format!(
+      "http://{}/{}",
+      rvolume,
+      hash_key_into_path(key.as_bytes())
+    );
+    client
+      .delete(&rpath)
+      .send()
+      .await?
+      .error_for_status()?;
+  }
+  app.delete_record(&key.to_string())?;
+  Ok(StatusCode::NO_CONTENT)
 }
 
-async fn handle_unlink(app:&App, key:&str) -> &'static str {
-  "UNLINK /: I need ya!"
-}
-
-async fn handle_rebalance(app:&App, key:&str) -> &'static str {
-  "REBALANCE /: I wanna be inside ya..."
-}*/
-
-async fn dispatch(
+pub async fn dispatch(
   State(app):State<Arc<App>>,
   Path(key):Path<String>,
   req:Request,
 ) -> Response {
   info!("dispatch: routing request..");
-  info!("dispatch: query? = {}", req.uri().query().is_some());
-  match req.method().as_str() {
-    "PUT" => {
-      handle_put(&app, &key, req).await.into_response()
-    },
+  let rmethod = req.method().as_str();
+  if rmethod == "PUT" || rmethod == "DELETE" {
+    let mut uindex = app.uindex.lock().await;
+    if !uindex.insert(key.clone()) {
+      return (
+        StatusCode::CONFLICT,
+        Json(json!({
+          "error": "The key is being used"
+        })),
+      ).into_response();
+    }
+    drop(uindex);
+  }
+  match rmethod {
     "GET" => {
       handle_get(&app, &key, req).await.into_response()
+    },
+    "PUT" => {
+      let resp = handle_put(&app, &key, req).await;
+      app.uindex.lock().await.remove(&key);
+      resp.into_response()
+    },
+    "DELETE" => {
+      let resp = handle_delete(&app, &key).await;
+      app.uindex.lock().await.remove(&key);
+      resp.into_response()
     },
     _ => {
       (
         StatusCode::METHOD_NOT_ALLOWED,
         Json(json!({
-          "error": "method not allowed"
+          "error": "Method not allowed"
         })),
       ).into_response()
     },
   }
 }
 
-pub async fn serve(app:Arc<App>, port:u16) -> Result<(),SysError> {
+pub async fn serve(app:Arc<App>, port:usize) -> Result<(),SysError> {
   let _ = app.ensure_table()?;
   let aroute = Router::new()
     .route("/{*key}", any(dispatch))

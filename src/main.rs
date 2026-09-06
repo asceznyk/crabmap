@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::collections::HashSet;
 
+use tokio::sync::Mutex;
 use tracing::{error,info};
 use clap::{Parser, Subcommand};
 use redb::{Database};
@@ -19,15 +21,15 @@ enum Command {
   //Rebalance
 }
 
-const DEFAULT_PORT:u16 = 4000;
+const DEFAULT_PORT:usize = 4000;
 const DEFAULT_NREPLICAS:usize = 3;
 const DEFAULT_NSUB:usize = 5;
-const DEFAULT_VOLTIMEOUT:usize = 1000;
+const DEFAULT_VOLTIMEOUT:usize = 30000;
 
 #[derive(Parser)]
 struct Args {
-  #[arg(long, default_value_t = DEFAULT_PORT, help = "port to run crabmap on")]
-  port:u16,
+  #[arg(long, default_value_t = DEFAULT_PORT, help = "port to listen on")]
+  port:usize,
   #[arg(long, default_value = "/tmp/index.db", help = "path to the db file")]
   dbfile:PathBuf,
   #[arg(long, default_value_t = DEFAULT_NREPLICAS, help = "num of replicas")]
@@ -62,7 +64,7 @@ async fn main() {
     .collect();
   let vlen:usize = volumes.len();
   if vlen <= 0 {
-    error!("!main: no. of volumes <= 0, you must have atleast one volume server");
+    error!("main: no. of volumes <= 0, you must have atleast one volume server");
     return;
   }
   if nreplicas <= 0 {
@@ -80,6 +82,7 @@ async fn main() {
     nsub,
     voltimeout,
     db: Database::create(dbfile).unwrap(),
+    uindex: Mutex::new(HashSet::new()),
   });
   match args.command {
     Some(Command::Run) => {

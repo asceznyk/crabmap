@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use thiserror;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -11,7 +13,7 @@ use axum::{
 };
 use axum::body::Body;
 use reqwest::Client;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
 use futures::future::try_join_all;
 use futures_util::StreamExt;
@@ -66,25 +68,25 @@ impl IntoResponse for SysError {
       SysError::NotFound => (
         StatusCode::NOT_FOUND,
         Json(json!({
-          "error": "not found"
+          "error": "Not found"
         })),
       ).into_response(),
       SysError::Internal => (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
-          "error": "internal server error"
+          "error": "Internal server error"
         })),
       ).into_response(),
       SysError::RecordNotFound => (
         StatusCode::NOT_FOUND,
         Json(json!({
-          "error": "record not found"
+          "error": "Record not found"
         })),
       ).into_response(),
       _ => (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(json!({
-          "error": "internal server error"
+          "error": "Internal server error"
         })),
       ).into_response(),
     }
@@ -216,6 +218,7 @@ async fn stream_to_replicas(
 
 #[derive(Debug)]
 pub struct App {
+  pub uindex: Mutex<HashSet<String>>,
   pub volumes: Vec<String>,
   pub nsub: usize,
   pub nreplicas: usize,
@@ -250,6 +253,16 @@ impl App {
       let mut table = write_txn.open_table(TABLE)?;
       let json:String = from_record(rec)?;
       table.insert(key, json)?;
+    }
+    write_txn.commit()?;
+    Ok(())
+  }
+  pub fn delete_record(&self, key:&String) -> Result<(),SysError> {
+    let db = &self.db;
+    let write_txn = db.begin_write()?;
+    {
+      let mut table = write_txn.open_table(TABLE)?;
+      table.remove(key)?.ok_or(SysError::RecordNotFound)?;
     }
     write_txn.commit()?;
     Ok(())
