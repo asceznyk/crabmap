@@ -5,14 +5,14 @@ cargo build
 
 results=$(mktemp)
 
-setsid ./target/debug/crabmap \
+setsid ./target/debug/crabstore \
   --pvolumes localhost:4001,localhost:4002,localhost:4003,localhost:4004,localhost:4005 \
   --dbfile /tmp/test.db \
   run &
 PID=$!
 
 cleanup() {
-  echo "Stopping crabmap..."
+  echo "Stopping crabstore..."
   kill -- "-$PID" 2>/dev/null || true
   wait "$PID" 2>/dev/null || true
   rm -f /tmp/test.db "$results"
