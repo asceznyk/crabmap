@@ -133,7 +133,6 @@ async fn handle_put(
 }
 
 async fn handle_delete(app:&App, key:&str) -> Result<StatusCode,SysError> {
-  info!("handle_delete: are we here?");
   let rec = match app.get_record(&key.to_string()) {
     Ok(rec) => rec,
     Err(SysError::RecordNotFound) => {
