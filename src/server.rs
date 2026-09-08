@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use rand::seq::SliceRandom;
 use rand::rng;
 
-use crate::core::{App, Record, Deleted, SysError};
+use crate::core::{App, Record, Deleted, SysError, ListQuery};
 use crate::core::{hash_key_into_path};
 
 async fn handle_get(
@@ -164,12 +164,8 @@ async fn handle_delete(app:&App, key:&str) -> Result<StatusCode,SysError> {
   Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn dispatch(
-  State(app):State<Arc<App>>,
-  Path(key):Path<String>,
-  req:Request,
-) -> Response {
-  info!("dispatch: routing request..");
+async fn dispatch_key(app:Arc<App>, key:String, req:Request) -> Response {
+  info!("dispatch_key: key request");
   let rmethod = req.method().as_str();
   if rmethod == "PUT" || rmethod == "DELETE" {
     let mut uindex = app.uindex.lock().await;
@@ -208,9 +204,54 @@ pub async fn dispatch(
   }
 }
 
+async fn dispatch_query(
+  app:Arc<App>,
+  prefix:String,
+  req:Request
+) -> Response {
+  info!("dispatch_query: query request..");
+  let raw_query = req.uri().query().unwrap_or("");
+  let list_query: ListQuery = match serde_urlencoded::from_str(raw_query) {
+    Ok(list_query) => list_query,
+    Err(err) => {
+      error!("dispatch_query: invalid query: {err}");
+      return StatusCode::BAD_REQUEST.into_response();
+    }
+  };
+  if list_query.list.is_none() {
+    return StatusCode::BAD_REQUEST.into_response();
+  }
+  info!("dispatch_query: list_query = {:?}, prefix = {}", list_query, prefix);
+  let res = match app.list_keys(&prefix, list_query).await {
+    Ok(res) => res,
+    Err(err) => {
+      return err.into_response();
+    }
+  };
+  res.into_response()
+}
+
+pub async fn dispatch(
+  State(app):State<Arc<App>>,
+  req:Request,
+) -> Response {
+  info!("dispatch: routing request...");
+  let path = req.uri().path();
+  let key = path.strip_prefix('/').unwrap_or(path);
+  if req.uri().query().is_some() {
+    return dispatch_query(app, key.to_string(), req).await;
+  }
+  if key.is_empty() {
+    info!("dispatch: empty key!");
+    return StatusCode::BAD_REQUEST.into_response();
+  }
+  dispatch_key(app, key.to_string(), req).await
+}
+
 pub async fn serve(app:Arc<App>, port:usize) -> Result<(),SysError> {
   let _ = app.ensure_table()?;
   let aroute = Router::new()
+    .route("/", any(dispatch))
     .route("/{*key}", any(dispatch))
     .with_state(app);
   let listener = tokio::net::TcpListener::bind(format!("localhost:{port}"))

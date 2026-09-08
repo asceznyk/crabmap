@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ops::Bound;
 
 use thiserror;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,9 @@ use futures::future::try_join_all;
 use futures_util::StreamExt;
 use md5::{Digest, Md5};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+const DEFAULT_LIST_LIMIT:usize = 100;
+const MAX_LIST_LIMIT:usize = 1000;
 
 const TABLE:TableDefinition<String,String> = TableDefinition::new("path_map");
 
@@ -54,6 +58,8 @@ pub enum SysError {
   Reqwest(#[from] reqwest::Error),
   #[error("Axum error: {0}")]
   Axum(#[from] axum::Error),
+  #[error("not found")]
+  InvalidCursor,
   #[error("not found")]
   NotFound,
   #[error("record not found")]
@@ -216,6 +222,13 @@ async fn stream_to_replicas(
   Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+  pub list: Option<String>,
+  pub limit: Option<usize>,
+  pub cursor: Option<String>
+}
+
 #[derive(Debug)]
 pub struct App {
   pub uindex: Mutex<HashSet<String>>,
@@ -224,6 +237,18 @@ pub struct App {
   pub nreplicas: usize,
   pub voltimeout: usize,
   pub db: Database
+}
+
+fn prefix_upper_bound(prefix:&str) -> Option<String> {
+  let mut bytes = prefix.as_bytes().to_vec();
+  for i in (0..bytes.len()).rev() {
+    if bytes[i] < 0xff {
+      bytes[i] += 1;
+      bytes.truncate(i + 1);
+      return String::from_utf8(bytes).ok();
+    }
+  }
+  None
 }
 
 impl App {
@@ -301,13 +326,50 @@ impl App {
     )?;
     Ok(())
   }
-  pub async fn query_handler(
-    &self, req:Request
+  pub async fn list_keys(
+    &self, prefix:&String, list_query:ListQuery
   ) -> Result<Json<Value>,SysError> {
-    let query = req.uri().query();
+    let limit = list_query.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let cursor:Option<String> = list_query.cursor;
+    let read_txn = self.db.begin_read()?;
+    let table = read_txn.open_table(TABLE)?;
+    let lower = prefix.clone();
+    let upper:Option<String> = prefix_upper_bound(prefix.as_str());
+    if let Some(cursor) = &cursor {
+      if !cursor.starts_with(&lower) {
+        return Err(SysError::InvalidCursor);
+      }
+    }
+    info!("app.list_keys: cursor = {:?}, upper = {:?}", cursor, upper);
+    let range = match (cursor, upper) {
+      (Some(cursor), Some(upper)) => table.range((
+        Bound::Excluded(cursor),
+        Bound::Excluded(upper),
+      ))?,
+      (None, Some(upper)) => table.range(
+        lower..upper
+      )?,
+      (Some(cursor), None) => table.range((
+        Bound::Excluded(cursor),
+        Bound::<String>::Unbounded,
+      ))?,
+      (None, None) => table.range((
+        Bound::<String>::Unbounded,
+        Bound::<String>::Unbounded,
+      ))?,
+    };
+    info!("app.list_keys: limit = {limit}");
+    let mut res:Vec<String> = Vec::with_capacity(limit);
+    for result in range {
+      let (key, _) = result?;
+      res.push(key.value().to_string());
+      if res.len() >= limit {
+        break;
+      }
+    }
     Ok(
       Json(json!({
-        "query": query
+        "keys": res
       }))
     )
   }
