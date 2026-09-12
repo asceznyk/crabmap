@@ -7,24 +7,26 @@ use tracing::{error,info};
 use clap::{Parser, Subcommand};
 use redb::{Database};
 
-mod server;
-use server::{serve};
 mod core;
 use core::{
   App, Record, Deleted, SysError
 };
+mod server;
+use server::{serve};
+mod rebuild;
+use rebuild::{rebuild};
 
 #[derive(Subcommand)]
 enum Command {
   Run,
-  //Rebuild,
+  Rebuild,
   //Rebalance
 }
 
 const DEFAULT_PORT:usize = 4000;
 const DEFAULT_NREPLICAS:usize = 3;
 const DEFAULT_NSUB:usize = 5;
-const DEFAULT_VOLTIMEOUT:usize = 30000;
+const DEFAULT_VOLTIMEOUT:usize = 5;
 
 #[derive(Parser)]
 struct Args {
@@ -38,7 +40,7 @@ struct Args {
   nsub:usize,
   #[arg(long, default_value = "", help = "list of volume servers comma separated")]
   pvolumes:String,
-  #[arg(long, default_value_t = DEFAULT_VOLTIMEOUT, help = "request timeout for volume servers - in miliseconds")]
+  #[arg(long, default_value_t = DEFAULT_VOLTIMEOUT, help = "request timeout for volume servers - in seconds")]
   voltimeout:usize,
   #[command(subcommand)]
   command:Option<Command>,
@@ -81,12 +83,15 @@ async fn main() {
     nreplicas,
     nsub,
     voltimeout,
-    db: Database::create(dbfile).unwrap(),
+    db: Database::create(dbfile.clone()).unwrap(),
     uindex: Mutex::new(HashSet::new()),
   });
   match args.command {
     Some(Command::Run) => {
       serve(app, port).await;
+    },
+    Some (Command::Rebuild) => {
+      rebuild(app).await;
     }
     None => {
       error!("main: no command provided! available: `run, rebuild, rebalance`");

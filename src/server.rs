@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
   extract::{Path, State, Request},
@@ -53,6 +54,7 @@ async fn handle_get(
     );
     let response = client
       .head(&rpath)
+      .timeout(Duration::from_secs(app.voltimeout.try_into().unwrap()))
       .send()
       .await;
     if let Ok(response) = response {
@@ -156,6 +158,7 @@ async fn handle_delete(app:&App, key:&str) -> Result<StatusCode,SysError> {
     );
     client
       .delete(&rpath)
+      .timeout(Duration::from_secs(app.voltimeout.try_into().unwrap()))
       .send()
       .await?
       .error_for_status()?;

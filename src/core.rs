@@ -58,6 +58,8 @@ pub enum SysError {
   Reqwest(#[from] reqwest::Error),
   #[error("Axum error: {0}")]
   Axum(#[from] axum::Error),
+  #[error("base64 error: {0}")]
+  Base64Decode(#[from] base64::DecodeError),
   #[error("not found")]
   InvalidCursor,
   #[error("not found")]
@@ -340,7 +342,6 @@ impl App {
         return Err(SysError::InvalidCursor);
       }
     }
-    info!("app.list_keys: cursor = {:?}, upper = {:?}", cursor, upper);
     let range = match (cursor, upper) {
       (Some(cursor), Some(upper)) => table.range((
         Bound::Excluded(cursor),
@@ -358,18 +359,22 @@ impl App {
         Bound::<String>::Unbounded,
       ))?,
     };
-    info!("app.list_keys: limit = {limit}");
-    let mut res:Vec<String> = Vec::with_capacity(limit);
-    for result in range {
-      let (key, _) = result?;
+    let mut res:Vec<String> = Vec::with_capacity(limit+1);
+    for item in range {
+      let (key, _) = item?;
       res.push(key.value().to_string());
-      if res.len() >= limit {
+      if res.len() > limit {
         break;
       }
     }
+    let has_more = res.len() > limit;
+    if has_more { res.pop(); };
+    let next = if has_more { res.last().clone() } else { None };
     Ok(
       Json(json!({
-        "keys": res
+        "keys": res,
+        "next": next,
+        "has_more": has_more
       }))
     )
   }
